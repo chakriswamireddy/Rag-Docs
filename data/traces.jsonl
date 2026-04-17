@@ -1,0 +1,1 @@
+{"queryId":"mnzmnljc44ox","timestamp":"2026-04-15T05:46:16.737Z","question":"What is this document about?","queryType":"summarization","retrievalMs":3392,"rerankMs":233,"llmMs":167,"totalMs":4185,"chunksRetrieved":1,"estimatedTokens":259,"isGrounded":true,"groundingConfidence":1,"cacheHit":false}

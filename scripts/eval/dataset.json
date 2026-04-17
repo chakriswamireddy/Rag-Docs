@@ -1,0 +1,16 @@
+[
+  {
+    "id": "eval-001",
+    "question": "What is the total invoice amount?",
+    "expectedAnswer": "",
+    "expectedSources": [],
+    "notes": "Replace expectedAnswer with the actual value after indexing your document"
+  },
+  {
+    "id": "eval-002",
+    "question": "Who are the parties involved in this agreement?",
+    "expectedAnswer": "",
+    "expectedSources": [],
+    "notes": "Populate with real expected values"
+  }
+]

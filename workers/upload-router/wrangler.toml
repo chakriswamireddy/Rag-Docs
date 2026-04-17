@@ -1,0 +1,22 @@
+name = "rag-docs-upload-router"
+main = "src/index.ts"
+compatibility_date = "2026-04-13"
+
+[ai]
+binding = "AI"
+
+[vars]
+R2_ENDPOINT = "https://b70ed07b094f2a626d0eb43e8bc49793.r2.cloudflarestorage.com"
+R2_BUCKET_NAME = "rag-docs"
+R2_PUBLIC_URL = "https://pub-f8ec877e306d42eda6e126421c7ff4a3.r2.dev"
+PINECONE_INDEX_HOST = "rag-docs-index"
+SQS_QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/116981763464/rag-processing-queue"
+AWS_REGION = "us-east-1"
+
+# Add secrets with:
+# wrangler secret put WORKER_SECRET
+# wrangler secret put R2_ACCESS_KEY_ID
+# wrangler secret put R2_SECRET_ACCESS_KEY
+# wrangler secret put PINECONE_API_KEY
+# wrangler secret put AWS_ACCESS_KEY_ID
+# wrangler secret put AWS_SECRET_ACCESS_KEY
