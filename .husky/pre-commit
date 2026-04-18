@@ -1,0 +1,42 @@
+#!/usr/bin/env sh
+
+echo "Running pre-commit checks..."
+
+# ── 1. Lint ──────────────────────────────────────────────────────────────────
+echo ""
+echo "[1/3] Running ESLint..."
+bun run lint
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "❌ COMMIT BLOCKED: Lint errors found."
+  echo "   Fix the issues above, then stage your changes and try again."
+  exit 1
+fi
+echo "✅ Lint passed."
+
+# ── 2. Type check ────────────────────────────────────────────────────────────
+echo ""
+echo "[2/3] Running TypeScript type check..."
+bun run typecheck
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "❌ COMMIT BLOCKED: TypeScript type errors found."
+  echo "   Fix the type errors above, then stage your changes and try again."
+  exit 1
+fi
+echo "✅ Type check passed."
+
+# ── 3. Build ─────────────────────────────────────────────────────────────────
+echo ""
+echo "[3/3] Running production build..."
+bun run build
+if [ $? -ne 0 ]; then
+  echo ""
+  echo "❌ COMMIT BLOCKED: Build failed."
+  echo "   Fix the build errors above, then stage your changes and try again."
+  exit 1
+fi
+echo "✅ Build passed."
+
+echo ""
+echo "✅ All pre-commit checks passed. Proceeding with commit."
