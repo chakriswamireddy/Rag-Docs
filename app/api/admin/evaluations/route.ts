@@ -5,7 +5,7 @@ import { listEvalCases, createEvalCase } from "@/lib/services/evaluation.service
 export async function GET() {
   try {
     const { tenantId } = await requireRole("admin", "super_admin");
-    const cases = await listEvalCases(tenantId);
+    const cases = await listEvalCases(tenantId as string);
     return NextResponse.json({ evaluations: cases });
   } catch (err) {
     if (err instanceof AuthError)
@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const evalCase = await createEvalCase(tenantId, question, expectedAnswer);
+    const evalCase = await createEvalCase(tenantId as string, question, expectedAnswer);
     return NextResponse.json({ evaluation: evalCase }, { status: 201 });
   } catch (err) {
     if (err instanceof AuthError)

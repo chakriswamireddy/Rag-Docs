@@ -23,7 +23,12 @@ export default function UsersPage() {
     setLoading(false);
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    fetch("/api/admin/users?limit=100")
+      .then((r) => r.json())
+      .then((data: { users?: User[] }) => { setUsers(data.users ?? []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
 
   async function handleRoleToggle(user: User) {
     const newRole = user.role === "admin" ? "member" : "admin";

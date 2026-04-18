@@ -88,15 +88,14 @@ export async function runEvaluation(tenantId: string) {
       const f1 = f1Score(evalCase.expectedAnswer, actual);
       const isGrounded = response.verification?.isGrounded ?? true;
 
-      const [result] = await db
+      await db
         .insert(evaluationResults)
         .values({
           evaluationId: evalCase.id,
           retrievedCorrect: isGrounded,
           answerCorrect: isExact,
           score: f1,
-        })
-        .returning();
+        });
 
       results.push({
         evaluationId: evalCase.id,

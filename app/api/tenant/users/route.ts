@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireTenant, AuthError } from "@/lib/tenant-context";
 import { listUsers, inviteUser } from "@/lib/services/user.service";
 
-export async function GET(_req: NextRequest) {
+export async function GET() {
   try {
     const { tenantId } = await requireTenant();
     const users = await listUsers(tenantId);

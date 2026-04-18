@@ -5,7 +5,7 @@ import { getEvalResults } from "@/lib/services/evaluation.service";
 export async function GET() {
   try {
     const { tenantId } = await requireRole("admin", "super_admin");
-    const results = await getEvalResults(tenantId);
+    const results = await getEvalResults(tenantId as string);
     return NextResponse.json(results);
   } catch (err) {
     if (err instanceof AuthError)

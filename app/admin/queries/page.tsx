@@ -25,7 +25,12 @@ export default function QueriesPage() {
     setLoading(false);
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    fetch("/api/admin/queries?limit=50")
+      .then((r) => r.json())
+      .then((data: { queries?: Query[] }) => { setQueries(data.queries ?? []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
 
   return (
     <div className="flex flex-col gap-6">

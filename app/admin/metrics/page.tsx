@@ -59,7 +59,12 @@ export default function MetricsPage() {
     setLoading(false);
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    fetch("/api/admin/metrics?limit=500")
+      .then((r) => r.json())
+      .then((data: { metrics?: Metric[] }) => { setMetrics(data.metrics ?? []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
 
   const agg = aggregate(metrics);
 

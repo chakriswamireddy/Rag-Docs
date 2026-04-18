@@ -71,7 +71,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
         if (dbUser) {
           token.tenantId = dbUser.tenantId;
-          token.role = dbUser.role;
+          token.role = dbUser.role ?? undefined;
           // Attach tenant slug for client-side navigation
           if (dbUser.tenantId) {
             const [tenant] = await db
@@ -114,7 +114,7 @@ declare module "next-auth" {
   }
 }
 
-declare module "next-auth/jwt" {
+declare module "@auth/core/jwt" {
   interface JWT {
     id?: string;
     tenantId?: string | null;

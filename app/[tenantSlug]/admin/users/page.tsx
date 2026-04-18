@@ -27,7 +27,12 @@ export default function TenantUsersPage() {
     setLoading(false);
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    fetch("/api/tenant/users")
+      .then((r) => r.json())
+      .then((data: { users?: User[] }) => { setUsers(data.users ?? []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();

@@ -5,7 +5,7 @@ import { getMetricsSummary } from "@/lib/services/metrics.service";
 export async function GET() {
   try {
     const { tenantId } = await requireRole("admin", "super_admin");
-    const summary = await getMetricsSummary(tenantId);
+    const summary = await getMetricsSummary(tenantId as string);
     return NextResponse.json({ summary });
   } catch (err) {
     if (err instanceof AuthError)

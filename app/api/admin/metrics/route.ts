@@ -7,7 +7,7 @@ export async function GET(req: NextRequest) {
     const { tenantId } = await requireRole("admin", "super_admin");
     const url = new URL(req.url);
 
-    const data = await getMetrics(tenantId, {
+    const data = await getMetrics(tenantId as string, {
       type: url.searchParams.get("type") ?? undefined,
       startDate: url.searchParams.get("startDate") ?? undefined,
       endDate: url.searchParams.get("endDate") ?? undefined,

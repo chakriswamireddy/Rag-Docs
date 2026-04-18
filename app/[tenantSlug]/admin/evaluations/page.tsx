@@ -33,7 +33,12 @@ export default function TenantEvaluationsPage() {
     setLoading(false);
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    fetch("/api/tenant/evaluations")
+      .then((r) => r.json())
+      .then((d: { evaluations?: EvalCase[] }) => { setCases(d.evaluations ?? []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();

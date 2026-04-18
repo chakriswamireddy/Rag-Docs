@@ -42,7 +42,6 @@ export default function TenantAppPage({
 }: {
   params: Promise<{ tenantSlug: string }>;
 }) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { tenantSlug } = use(params);
   const storageKey = `rag-history-${tenantSlug}`;
 

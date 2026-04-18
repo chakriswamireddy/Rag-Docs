@@ -35,7 +35,12 @@ export default function TenantsPage() {
     setLoading(false);
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    fetch("/api/admin/tenants?limit=100")
+      .then((r) => r.json())
+      .then((data: { tenants?: Tenant[] }) => { setTenants(data.tenants ?? []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();

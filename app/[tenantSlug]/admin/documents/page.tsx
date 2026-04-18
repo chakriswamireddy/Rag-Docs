@@ -38,7 +38,12 @@ export default function TenantDocumentsPage() {
     setLoading(false);
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    fetch("/api/tenant/documents?limit=100")
+      .then((r) => r.json())
+      .then((data: { documents?: Doc[] }) => { setDocs(data.documents ?? []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
 
   return (
     <div className="flex flex-col gap-6">

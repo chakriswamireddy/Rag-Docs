@@ -29,7 +29,12 @@ export default function EvaluationsPage() {
     setLoading(false);
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    fetch("/api/admin/evaluations?limit=50")
+      .then((r) => r.json())
+      .then((data: { evaluations?: Evaluation[] }) => { setEvals(data.evaluations ?? []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();

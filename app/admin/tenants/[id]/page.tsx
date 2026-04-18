@@ -54,7 +54,16 @@ export default function TenantDetailPage({
     setLoading(false);
   }
 
-  useEffect(() => { load(); }, [tenantId]);
+  useEffect(() => {
+    Promise.all([
+      fetch(`/api/admin/tenants/${tenantId}`).then((r) => r.json()).catch(() => ({})),
+      fetch(`/api/admin/tenants/${tenantId}/users`).then((r) => r.json()).catch(() => ({ users: [] })),
+    ]).then(([tRes, uRes]: [{ tenant?: Tenant }, { users?: TenantUser[] }]) => {
+      setTenant(tRes.tenant ?? null);
+      setUsers(uRes.users ?? []);
+      setLoading(false);
+    });
+  }, [tenantId]);
 
   async function handleAddUser(e: React.FormEvent) {
     e.preventDefault();
@@ -243,7 +252,7 @@ export default function TenantDetailPage({
           {users.length === 0 ? (
             <div className="p-8 text-center">
               <p className="text-sm text-white/40">No users in this tenant yet.</p>
-              <p className="mt-2 text-xs text-white/30">Use "Add User" to create one, then share the login URL above.</p>
+              <p className="mt-2 text-xs text-white/30">Use &quot;Add User&quot; to create one, then share the login URL above.</p>
             </div>
           ) : (
             <table className="w-full text-sm">

@@ -22,12 +22,10 @@ export default function TenantQueriesPage() {
   const [selected, setSelected] = useState<Query | null>(null);
 
   useEffect(() => {
-    setLoading(true);
     fetch("/api/tenant/queries?limit=100")
       .then((r) => r.json())
-      .then((d: { queries?: Query[] }) => { setQueries(d.queries ?? []); })
-      .catch(() => {})
-      .finally(() => setLoading(false));
+      .then((d: { queries?: Query[] }) => { setQueries(d.queries ?? []); setLoading(false); })
+      .catch(() => setLoading(false));
   }, []);
 
   return (
