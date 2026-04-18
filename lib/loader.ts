@@ -1,6 +1,9 @@
 import { PDFLoader } from "@langchain/community/document_loaders/fs/pdf";
-import { RecursiveCharacterTextSplitter } from "langchain/text_splitter";
 import path from "path";
+
+const MAX_CHUNK_SIZE = 800;
+const MIN_CHUNK_SIZE = 200;
+const TARGET_CHUNK_SIZE = 500;
 
 /**
  * Heuristically detect a section heading from the first line of a chunk.
@@ -24,32 +27,92 @@ function detectSection(text: string): string {
   return "General";
 }
 
+/**
+ * Semantic chunking: split text by paragraphs, merge small fragments,
+ * and split oversized paragraphs by sentences.
+ */
+function semanticChunk(text: string): string[] {
+  const paragraphs = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const chunks: string[] = [];
+  let buffer = "";
+
+  for (const para of paragraphs) {
+    if (para.length > MAX_CHUNK_SIZE) {
+      if (buffer) { chunks.push(buffer.trim()); buffer = ""; }
+      const sentences = para.split(/(?<=[.!?])\s+/);
+      let sentBuf = "";
+      for (const sent of sentences) {
+        if (sentBuf.length + sent.length + 1 > TARGET_CHUNK_SIZE && sentBuf) {
+          chunks.push(sentBuf.trim());
+          sentBuf = "";
+        }
+        sentBuf += (sentBuf ? " " : "") + sent;
+      }
+      if (sentBuf) chunks.push(sentBuf.trim());
+    } else if (buffer.length + para.length + 2 > TARGET_CHUNK_SIZE) {
+      if (buffer) chunks.push(buffer.trim());
+      buffer = para;
+    } else {
+      buffer += (buffer ? "\n\n" : "") + para;
+    }
+  }
+  if (buffer) chunks.push(buffer.trim());
+
+  const merged: string[] = [];
+  for (const chunk of chunks) {
+    if (
+      merged.length > 0 &&
+      merged[merged.length - 1].length < MIN_CHUNK_SIZE &&
+      merged[merged.length - 1].length + chunk.length + 2 <= MAX_CHUNK_SIZE
+    ) {
+      merged[merged.length - 1] += "\n\n" + chunk;
+    } else if (
+      merged.length > 0 &&
+      chunk.length < MIN_CHUNK_SIZE &&
+      merged[merged.length - 1].length + chunk.length + 2 <= MAX_CHUNK_SIZE
+    ) {
+      merged[merged.length - 1] += "\n\n" + chunk;
+    } else {
+      merged.push(chunk);
+    }
+  }
+  return merged.filter(Boolean);
+}
+
 export async function loadAndSplit(filePath: string) {
   const loader = new PDFLoader(filePath);
   const docs = await loader.load();
 
-  const splitter = new RecursiveCharacterTextSplitter({
-    chunkSize: 500,
-    chunkOverlap: 80,
-    separators: ["\n\n", "\n", ". ", " ", ""],
-  });
-
-  const splitDocs = await splitter.splitDocuments(docs);
-
   const uploadedAt = new Date().toISOString();
   const source = path.basename(filePath);
 
-  return splitDocs.map((doc, index) => ({
-    ...doc,
-    metadata: {
-      ...doc.metadata,
-      source,
-      page: (doc.metadata?.loc as { pageNumber?: number } | undefined)?.pageNumber
-        ?? (doc.metadata?.page as number | undefined)
-        ?? 1,
-      section: detectSection(doc.pageContent),
-      chunkIndex: index,
-      uploadedAt,
-    },
+  // Combine all pages' text, then semantic chunk
+  const allChunks: { pageContent: string; metadata: Record<string, unknown> }[] = [];
+
+  for (const doc of docs) {
+    const pageNum =
+      (doc.metadata?.loc as { pageNumber?: number } | undefined)?.pageNumber
+      ?? (doc.metadata?.page as number | undefined)
+      ?? 1;
+
+    const chunks = semanticChunk(doc.pageContent);
+    for (const chunk of chunks) {
+      allChunks.push({
+        pageContent: chunk,
+        metadata: {
+          ...doc.metadata,
+          source,
+          page: pageNum,
+          section: detectSection(chunk),
+          uploadedAt,
+        },
+      });
+    }
+  }
+
+  // Assign global chunkIndex
+  return allChunks.map((chunk, index) => ({
+    ...chunk,
+    metadata: { ...chunk.metadata, chunkIndex: index },
   }));
 }

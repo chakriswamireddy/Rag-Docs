@@ -18,11 +18,30 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { getR2FileUrl, uploadToR2 } from "@/lib/r2";
 import { getS3FileUrl, uploadToS3 } from "@/lib/s3";
+import { auth } from "@/lib/auth";
+import { createDocument } from "@/lib/services/document.service";
+import { createJob } from "@/lib/services/processing.service";
+import { checkUploadLimit } from "@/lib/rate-limit";
 
 type StorageProvider = "cloudflare" | "aws";
 
 export async function POST(req: NextRequest) {
   try {
+    const session = await auth();
+    const tenantId = session?.user?.tenantId ?? null;
+    const userId = session?.user?.id ?? null;
+
+    // Rate limit uploads
+    if (tenantId) {
+      const limit = checkUploadLimit(tenantId);
+      if (!limit.allowed) {
+        return NextResponse.json(
+          { error: "Upload rate limit exceeded" },
+          { status: 429, headers: { "Retry-After": String(Math.ceil((limit.retryAfterMs ?? 0) / 1000)) } }
+        );
+      }
+    }
+
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
 
@@ -50,14 +69,31 @@ export async function POST(req: NextRequest) {
     // 1. Persist raw PDF to chosen storage
     let fileUrl: string;
     if (storageProvider === "aws") {
-      await uploadToS3(docId, buffer);
-      fileUrl = getS3FileUrl(docId);
+      await uploadToS3(tenantId, docId, buffer);
+      fileUrl = getS3FileUrl(tenantId, docId);
     } else {
-      await uploadToR2(docId, buffer);
-      fileUrl = getR2FileUrl(docId);
+      await uploadToR2(tenantId, docId, buffer);
+      fileUrl = getR2FileUrl(tenantId, docId);
     }
 
-    // 2. Dispatch event to CF Worker (Worker decides small-inline vs SQS queue)
+    // 2. Record in database
+    const doc = await createDocument({
+      tenantId,
+      userId,
+      fileName: file.name,
+      fileUrl,
+      fileHash: docId,
+      fileSize: buffer.byteLength,
+      mimeType: "application/pdf",
+    });
+
+    // Create processing jobs for each stage
+    const stages = ["parsing", "chunking", "embedding", "indexing"];
+    for (const stage of stages) {
+      await createJob(tenantId, doc.id, stage);
+    }
+
+    // 3. Dispatch event to CF Worker (Worker decides small-inline vs SQS queue)
     if (!process.env.CF_WORKER_URL) {
       return NextResponse.json(
         { error: "CF_WORKER_URL is not configured" },
@@ -78,6 +114,8 @@ export async function POST(req: NextRequest) {
         fileSize: buffer.byteLength,
         uploadedAt: new Date().toISOString(),
         storageProvider,
+        tenantId,
+        userId,
       }),
     });
 

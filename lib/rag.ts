@@ -6,6 +6,7 @@ import { cacheKey, getCached, setCached } from "./cache";
 import { verifyAnswer } from "./guardrails";
 import { trace, makeQueryId } from "./telemetry";
 import { multiHopRetrieve } from "./multi-hop";
+import { logQuery, logRetrievals, logResponse, logCitations } from "./services/query.service";
 import type { QueryType } from "./query-classifier";
 import Groq from "groq-sdk";
 
@@ -32,10 +33,23 @@ export type AskResult = {
     confidence: number;
     unsupportedClaims: string[];
   };
+  /** Citation details from retrieved chunks. */
+  citations?: {
+    documentName: string;
+    section: string;
+    page: number;
+    chunkPreview: string;
+  }[];
+};
+
+/** Context passed through the pipeline for tenant-scoping and logging. */
+export type PipelineContext = {
+  tenantId?: string | null;
+  userId?: string | null;
 };
 
 /** Shared retrieval pipeline used by both the JSON and streaming paths. */
-async function runPipeline(question: string, history: ConversationTurn[]) {
+async function runPipeline(question: string, history: ConversationTurn[], ctx: PipelineContext = {}) {
   const standaloneQ = await rewriteWithContext(question, history);
   const plan = await buildRetrievalPlan(standaloneQ);
 
@@ -44,13 +58,13 @@ async function runPipeline(question: string, history: ConversationTurn[]) {
   // For multi-hop queries, use the dedicated two-hop retriever
   let primaryResults;
   if (plan.type === "multi-hop") {
-    primaryResults = await multiHopRetrieve(plan);
+    primaryResults = await multiHopRetrieve(plan, ctx.tenantId);
   } else {
-    primaryResults = await hybridRetrieve(plan.primaryQuery, 20);
+    primaryResults = await hybridRetrieve(plan.primaryQuery, 20, ctx.tenantId);
   }
 
   const subResults = await Promise.all(
-    plan.subQueries.map((sq) => hybridRetrieve(sq, 10))
+    plan.subQueries.map((sq) => hybridRetrieve(sq, 10, ctx.tenantId))
   );
 
   const merged = [...primaryResults];
@@ -117,7 +131,8 @@ async function runPipeline(question: string, history: ConversationTurn[]) {
 
 export async function askQuestion(
   question: string,
-  history: ConversationTurn[] = []
+  history: ConversationTurn[] = [],
+  ctx: PipelineContext = {}
 ): Promise<AskResult & { cached?: boolean }> {
   const totalStart = performance.now();
   const queryId = makeQueryId();
@@ -130,7 +145,7 @@ export async function askQuestion(
   }
 
   const { messages, sources, queryType, top, retrievalMs, rerankMs, chunksRetrieved } =
-    await runPipeline(question, history);
+    await runPipeline(question, history, ctx);
 
   const llmStart = performance.now();
   const completion = await groq.chat.completions.create({
@@ -143,6 +158,12 @@ export async function askQuestion(
     answer: completion.choices[0]?.message?.content ?? null,
     sources,
     queryType,
+    citations: top.map((r) => ({
+      documentName: String(r.doc.metadata?.source ?? "Unknown"),
+      section: String(r.doc.metadata?.section ?? "General"),
+      page: Number(r.doc.metadata?.page ?? 1),
+      chunkPreview: r.doc.pageContent.slice(0, 150),
+    })),
   };
 
   // Verify grounding (non-blocking — failure returns safe default)
@@ -151,6 +172,10 @@ export async function askQuestion(
   }
 
   const totalMs = performance.now() - totalStart;
+
+  const estimatedTokens = Math.round(
+    messages.reduce((s, m) => s + (typeof m.content === "string" ? m.content.length / 4 : 0), 0)
+  );
 
   // Emit telemetry
   trace({
@@ -163,13 +188,53 @@ export async function askQuestion(
     llmMs: Math.round(llmMs),
     totalMs: Math.round(totalMs),
     chunksRetrieved,
-    estimatedTokens: Math.round(
-      messages.reduce((s, m) => s + (typeof m.content === "string" ? m.content.length / 4 : 0), 0)
-    ),
+    estimatedTokens,
     isGrounded: result.verification?.isGrounded ?? true,
     groundingConfidence: result.verification?.confidence ?? 1,
     cacheHit: false,
+    tenantId: ctx.tenantId,
   });
+
+  // Log to database (best-effort, non-blocking)
+  if (ctx.tenantId || ctx.userId) {
+    try {
+      const dbQuery = await logQuery({
+        tenantId: ctx.tenantId ?? null,
+        userId: ctx.userId ?? null,
+        originalQuery: question,
+        rewrittenQuery: question,
+        queryType,
+        topK: top.length,
+        reranked: true,
+      });
+
+      // Log retrievals
+      const retrievalData = top.map((r, i) => ({
+        embeddingId: `${r.doc.metadata?.docId ?? "unknown"}-${r.doc.metadata?.chunkIndex ?? i}`,
+        score: r.score,
+        rerankScore: r.score,
+        rank: i + 1,
+      }));
+      await logRetrievals(dbQuery.id, retrievalData).catch(() => {});
+
+      // Log response
+      const dbResponse = await logResponse({
+        queryId: dbQuery.id,
+        answer: result.answer,
+        confidenceScore: result.verification?.confidence ?? 1,
+        tokenUsage: estimatedTokens,
+        latencyMs: Math.round(totalMs),
+      });
+
+      // Log citations
+      const citationData = top.map((r) => ({
+        embeddingId: `${r.doc.metadata?.docId ?? "unknown"}-${r.doc.metadata?.chunkIndex ?? 0}`,
+      }));
+      await logCitations(dbResponse.id, citationData).catch(() => {});
+    } catch (err) {
+      console.error("[rag] DB logging failed:", err);
+    }
+  }
 
   if (key) setCached(key, result);
   return result;
@@ -191,7 +256,8 @@ export type StreamEvent =
  */
 export function streamAskQuestion(
   question: string,
-  history: ConversationTurn[] = []
+  history: ConversationTurn[] = [],
+  ctx: PipelineContext = {}
 ): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
 
@@ -204,7 +270,8 @@ export function streamAskQuestion(
       try {
         const { messages, sources, queryType } = await runPipeline(
           question,
-          history
+          history,
+          ctx
         );
 
         send({ type: "meta", queryType, sources });

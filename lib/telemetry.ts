@@ -5,10 +5,13 @@
  * line so the file stays grep-friendly and never needs to be fully parsed).
  * Module also keeps an in-memory ring buffer of the last 200 events for the
  * /api/traces endpoint to return without reading disk.
+ *
+ * Dual-write: also writes key metrics to the PostgreSQL metrics table.
  */
 import fs from "fs";
 import path from "path";
 import type { QueryType } from "./query-classifier";
+import { recordMetric } from "./services/metrics.service";
 
 export type TraceEvent = {
   queryId: string;
@@ -25,6 +28,7 @@ export type TraceEvent = {
   isGrounded: boolean;
   groundingConfidence: number;
   cacheHit: boolean;
+  tenantId?: string | null;
 };
 
 const TRACES_PATH = path.join(process.cwd(), "data", "traces.jsonl");
@@ -32,7 +36,7 @@ const RING_BUFFER_SIZE = 200;
 
 const ring: TraceEvent[] = [];
 
-/** Append a trace event to disk and the in-memory buffer. */
+/** Append a trace event to disk, the in-memory buffer, and DB metrics. */
 export function trace(event: TraceEvent): void {
   // In-memory ring buffer
   ring.push(event);
@@ -46,6 +50,25 @@ export function trace(event: TraceEvent): void {
   } catch {
     // Disk write failure must never crash the main pipeline
   }
+
+  // Dual-write to DB metrics (best-effort, non-blocking)
+  const tenantId = event.tenantId ?? null;
+  const metadata = {
+    queryId: event.queryId,
+    queryType: event.queryType,
+    cacheHit: event.cacheHit,
+    isGrounded: event.isGrounded,
+  };
+
+  Promise.all([
+    recordMetric(tenantId, "retrieval_latency", event.retrievalMs, metadata),
+    recordMetric(tenantId, "rerank_latency", event.rerankMs, metadata),
+    recordMetric(tenantId, "llm_latency", event.llmMs, metadata),
+    recordMetric(tenantId, "total_latency", event.totalMs, metadata),
+    recordMetric(tenantId, "token_usage", event.estimatedTokens, metadata),
+  ]).catch(() => {
+    // DB write failure must never crash the main pipeline
+  });
 }
 
 /** Return the last `n` trace events from the in-memory ring buffer. */

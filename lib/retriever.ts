@@ -30,12 +30,14 @@ export type ScoredDocument = { doc: Document; score: number };
 
 /**
  * Retrieve the top-k most relevant chunks using hybrid Pinecone + BM25 search.
- * @param query   The user's question (already rewritten if multi-turn).
- * @param k       Maximum results to return (default 20; callers can slice down).
+ * @param query    The user's question (already rewritten if multi-turn).
+ * @param k        Maximum results to return (default 20; callers can slice down).
+ * @param tenantId Optional tenant ID to scope the search to a specific tenant namespace.
  */
 export async function hybridRetrieve(
   query: string,
-  k: number = 20
+  k: number = 20,
+  tenantId?: string | null
 ): Promise<ScoredDocument[]> {
   // Ensure BM25 is loaded (idempotent, synchronous read on warm paths)
   loadBM25Index();
@@ -43,10 +45,17 @@ export async function hybridRetrieve(
   // Dense retrieval via Pinecone — query across all indexed namespaces
   const queryEmbedding = await embedQuery(query);
 
-  // Discover all namespaces (one per docId after migration)
-  const stats = await index.describeIndexStats();
-  const namespaces = Object.keys(stats.namespaces ?? {});
-  const searchNs = namespaces.length > 0 ? namespaces : [DEFAULT_NAMESPACE];
+  let searchNs: string[];
+
+  if (tenantId) {
+    // Tenant-scoped: only search the tenant's namespace
+    searchNs = [`tenant_${tenantId}`];
+  } else {
+    // Legacy: discover all namespaces
+    const stats = await index.describeIndexStats();
+    const namespaces = Object.keys(stats.namespaces ?? {});
+    searchNs = namespaces.length > 0 ? namespaces : [DEFAULT_NAMESPACE];
+  }
 
   // Distribute topK evenly across namespaces; at least 5 per namespace
   const perNsK = Math.max(5, Math.ceil(k / searchNs.length));

@@ -74,10 +74,11 @@ function chunkKey(doc: ScoredDocument): string {
  * Falls back gracefully — if hop 2 yields nothing extra, hop 1 results are returned.
  */
 export async function multiHopRetrieve(
-  plan: RetrievalPlan
+  plan: RetrievalPlan,
+  tenantId?: string | null
 ): Promise<ScoredDocument[]> {
   // Hop 1
-  const hop1 = await hybridRetrieve(plan.primaryQuery, 10);
+  const hop1 = await hybridRetrieve(plan.primaryQuery, 10, tenantId);
 
   const firstHopContext = hop1
     .slice(0, 3)
@@ -94,7 +95,7 @@ export async function multiHopRetrieve(
 
   // Hop 2: retrieve for all follow-up queries in parallel
   const hop2Results = await Promise.all(
-    followups.map((q) => hybridRetrieve(q, 6))
+    followups.map((q) => hybridRetrieve(q, 6, tenantId))
   );
 
   // Merge: primary hop takes priority

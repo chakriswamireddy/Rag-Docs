@@ -29,8 +29,13 @@ function parseMessage(record: SQSRecord): UploadQueueMessage {
   return data;
 }
 
-async function buildChunkRecords(docId: string, fileName: string, uploadedAt: string) {
-  const pdfBuffer = await fetchPdfFromR2(docId);
+async function buildChunkRecords(
+  docId: string,
+  tenantId: string | null | undefined,
+  fileName: string,
+  uploadedAt: string
+) {
+  const pdfBuffer = await fetchPdfFromR2(tenantId ?? null, docId);
   const { text } = await extractText(new Uint8Array(pdfBuffer), { mergePages: false });
   const pages = Array.isArray(text) ? text : [text];
 
@@ -71,6 +76,7 @@ async function processRecord(record: SQSRecord) {
 
   const chunkRecords = await buildChunkRecords(
     message.docId,
+    message.tenantId,
     message.fileName,
     message.uploadedAt
   );

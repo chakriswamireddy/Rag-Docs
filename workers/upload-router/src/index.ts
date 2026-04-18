@@ -40,6 +40,10 @@ export interface Env {
   AI: {
     run(model: string, payload: unknown): Promise<unknown>;
   };
+
+  // Webhook callback URL (Next.js app)
+  WEBHOOK_URL: string;
+  WEBHOOK_SECRET: string;
 }
 
 const SMALL_FILE_THRESHOLD = 5 * 1024 * 1024; // 5 MB
@@ -50,6 +54,8 @@ export interface UploadEvent {
   fileName: string;
   fileSize: number;
   uploadedAt: string;
+  tenantId?: string | null;
+  userId?: string | null;
 }
 
 interface EmbedEvent {
@@ -156,20 +162,32 @@ async function handleEmbedRequest(request: Request, env: Env): Promise<Response>
 // ── Inline processor (small files only) ────────────────────────────────────
 
 async function processInline(event: UploadEvent, env: Env): Promise<void> {
-  const { docId, fileName, uploadedAt } = event;
-  const namespace = docId; // one namespace per document
+  const { docId, fileName, uploadedAt, tenantId } = event;
+  // Use tenant namespace if available, otherwise fall back to per-document namespace
+  const namespace = tenantId ? `tenant_${tenantId}` : docId;
 
   // Idempotency: skip if already indexed in this namespace
   if (await isAlreadyIndexed(namespace, env)) {
-    console.log(`[worker] ${docId} already indexed, skipping`);
+    console.log(`[worker] ${docId} already indexed in ${namespace}, skipping`);
     return;
   }
+
+  // Notify: parsing started
+  await sendWebhook(env, { docId, stage: "parsing", status: "started" });
 
   // 1. Fetch PDF bytes from R2
   const buffer = await fetchFromR2(docId, env);
 
-  // 2. Extract text and split into chunks
+  // Notify: chunking started
+  await sendWebhook(env, { docId, stage: "chunking", status: "started" });
+
+  // 2. Extract text and split into semantic chunks
   const chunks = await extractTextChunks(buffer, fileName, docId, uploadedAt);
+
+  await sendWebhook(env, { docId, stage: "chunking", status: "completed" });
+
+  // Notify: embedding started
+  await sendWebhook(env, { docId, stage: "embedding", status: "started" });
 
   // 3. Embed in batches (Workers AI supports batch input)
   const EMBED_BATCH = 50;
@@ -179,6 +197,11 @@ async function processInline(event: UploadEvent, env: Env): Promise<void> {
     const vecs = await embedTexts(texts, env);
     allEmbeddings.push(...vecs);
   }
+
+  await sendWebhook(env, { docId, stage: "embedding", status: "completed" });
+
+  // Notify: indexing started
+  await sendWebhook(env, { docId, stage: "indexing", status: "started" });
 
   // 4. Build Pinecone records
   const vectors = chunks.map((chunk, i) => ({
@@ -191,13 +214,51 @@ async function processInline(event: UploadEvent, env: Env): Promise<void> {
       text: chunk.text,
       source: fileName,
       uploadedAt,
+      ...(tenantId ? { tenantId } : {}),
     },
   }));
 
-  // 5. Upsert to Pinecone (namespace = docId)
+  // 5. Upsert to Pinecone (tenant namespace)
   await upsertToPinecone(vectors, namespace, env);
 
-  console.log(`[worker] ${docId} indexed ${chunks.length} chunks inline`);
+  // 6. Send final webhook with chunk data for DB storage
+  const chunkData = chunks.map((chunk, i) => ({
+    chunkIndex: i,
+    content: chunk.text,
+    sectionTitle: chunk.section,
+    pageNumber: chunk.page,
+    embeddingId: `${docId}-${i}`,
+  }));
+
+  await sendWebhook(env, {
+    docId,
+    stage: "indexing",
+    status: "completed",
+    totalChunks: chunks.length,
+    chunks: chunkData,
+  });
+
+  console.log(`[worker] ${docId} indexed ${chunks.length} chunks in namespace ${namespace}`);
+}
+
+/** Send a webhook callback to the Next.js app. Best-effort, never throws. */
+async function sendWebhook(
+  env: Env,
+  payload: Record<string, unknown>
+): Promise<void> {
+  if (!env.WEBHOOK_URL) return;
+  try {
+    await fetch(env.WEBHOOK_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-webhook-secret": env.WEBHOOK_SECRET || "",
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    console.error("[worker] webhook failed:", err);
+  }
 }
 
 async function withTimeout(task: Promise<void>, timeoutMs: number, docId: string) {

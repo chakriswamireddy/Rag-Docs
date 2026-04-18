@@ -1,25 +1,36 @@
 import { NextRequest, NextResponse } from "next/server";
 import { askQuestion, streamAskQuestion } from "@/lib/rag";
 import { runAgent } from "@/lib/agent/executor";
-import type { ConversationTurn } from "@/lib/router";
+import { auth } from "@/lib/auth";
+import { askSchema, validate } from "@/lib/validation";
+import { checkQueryLimit } from "@/lib/rate-limit";
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const { question, history, mode } = body as {
-      question?: string;
-      history?: ConversationTurn[];
-      mode?: "json" | "stream" | "agent";
+    const session = await auth();
+    const ctx = {
+      tenantId: session?.user?.tenantId ?? null,
+      userId: session?.user?.id ?? null,
     };
 
-    if (!question || typeof question !== "string" || question.trim() === "") {
-      return NextResponse.json(
-        { error: "Question required" },
-        { status: 400 }
-      );
+    // Rate limit
+    if (ctx.tenantId) {
+      const limit = checkQueryLimit(ctx.tenantId);
+      if (!limit.allowed) {
+        return NextResponse.json(
+          { error: "Rate limit exceeded" },
+          { status: 429, headers: { "Retry-After": String(Math.ceil((limit.retryAfterMs ?? 0) / 1000)) } }
+        );
+      }
     }
 
-    const safeHistory = Array.isArray(history) ? history : [];
+    const body = await req.json();
+    const parsed = validate(askSchema, body);
+    if (!parsed.success) {
+      return NextResponse.json({ error: parsed.error }, { status: 400 });
+    }
+
+    const { question, history: safeHistory, mode } = parsed.data;
 
     if (mode === "agent") {
       // Stream agent steps as NDJSON
@@ -45,7 +56,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (mode === "stream") {
-      const stream = streamAskQuestion(question, safeHistory);
+      const stream = streamAskQuestion(question, safeHistory, ctx);
       return new Response(stream, {
         headers: {
           "Content-Type": "application/x-ndjson",
@@ -55,7 +66,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const result = await askQuestion(question, safeHistory);
+    const result = await askQuestion(question, safeHistory, ctx);
     return NextResponse.json(result);
   } catch (err) {
     console.error(err);

@@ -1,12 +1,23 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+
+type Citation = {
+  documentName: string;
+  section: string;
+  page: number;
+  chunkPreview: string;
+};
 
 type HistoryItem = {
   id: string;
   question: string;
   answer: string;
   sources?: Array<Record<string, unknown>>;
+  citations?: Citation[];
   queryType?: string;
   createdAt: string;
 };
@@ -30,7 +41,12 @@ function buildHistoryContext(history: HistoryItem[]) {
     .join("\n\n");
 }
 
+const MAX_FILE_SIZE_MB = 3;
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+
 export default function Home() {
+  const { data: session, status } = useSession();
+  const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
   const [storageProvider, setStorageProvider] = useState<"cloudflare" | "aws">(
     "cloudflare"
@@ -47,6 +63,12 @@ export default function Home() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [includeHistory, setIncludeHistory] = useState(true);
   const [streamingAnswer, setStreamingAnswer] = useState("");
+
+  useEffect(() => {
+    if (status === "unauthenticated") {
+      router.replace("/auth/signin");
+    }
+  }, [status, router]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -77,6 +99,11 @@ export default function Home() {
     if (!file) {
       setUploadState("error");
       setUploadMessage("Please choose a PDF file first.");
+      return;
+    }
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      setUploadState("error");
+      setUploadMessage(`File exceeds the ${MAX_FILE_SIZE_MB} MB limit.`);
       return;
     }
 
@@ -147,6 +174,7 @@ export default function Home() {
       const decoder = new TextDecoder();
       let accumulated = "";
       let finalSources: Array<Record<string, unknown>> = [];
+      let finalCitations: Citation[] = [];
       let finalQueryType: string = "factual";
       let buffer = "";
 
@@ -165,11 +193,13 @@ export default function Home() {
               type: string;
               content?: string;
               sources?: Array<Record<string, unknown>>;
+              citations?: Citation[];
               queryType?: string;
               message?: string;
             };
             if (event.type === "meta") {
               finalSources = event.sources ?? [];
+              finalCitations = event.citations ?? [];
               finalQueryType = event.queryType ?? "factual";
             } else if (event.type === "token" && event.content) {
               accumulated += event.content;
@@ -188,6 +218,7 @@ export default function Home() {
         question: trimmed,
         answer: accumulated || "No answer returned.",
         sources: finalSources,
+        citations: finalCitations,
         queryType: finalQueryType,
         createdAt: new Date().toISOString(),
       };
@@ -210,6 +241,14 @@ export default function Home() {
     setHistory([]);
   }
 
+  if (status === "loading" || status === "unauthenticated") {
+    return (
+      <div className="flex min-h-[calc(100vh-57px)] items-center justify-center">
+        <span className="text-sm text-white/40">Loading...</span>
+      </div>
+    );
+  }
+
   return (
     <div className="relative min-h-screen overflow-hidden bg-zinc-950 text-zinc-100">
       <div className="pointer-events-none absolute inset-0">
@@ -220,8 +259,18 @@ export default function Home() {
 
       <div className="relative mx-auto flex w-full max-w-6xl flex-col gap-12 px-6 pb-16 pt-14 sm:px-10">
         <header className="flex flex-col gap-6">
-          <div className="inline-flex w-fit items-center gap-3 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs uppercase tracking-[0.3em] text-white/70">
-            Rag Studio
+          <div className="flex items-center justify-between">
+            <div className="inline-flex w-fit items-center gap-3 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs uppercase tracking-[0.3em] text-white/70">
+              Rag Studio
+            </div>
+            {!session && (
+              <Link
+                href="/auth/signin"
+                className="rounded-full border border-white/15 px-4 py-2 text-xs text-white/60 transition hover:border-white/40 hover:text-white"
+              >
+                Sign in to save queries
+              </Link>
+            )}
           </div>
           <div className="flex flex-col gap-4">
             <h1 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">
@@ -259,9 +308,19 @@ export default function Home() {
                       type="file"
                       accept=".pdf"
                       className="hidden"
-                      onChange={(event) =>
-                        setFile(event.target.files?.[0] ?? null)
-                      }
+                      onChange={(event) => {
+                        const picked = event.target.files?.[0] ?? null;
+                        if (picked && picked.size > MAX_FILE_SIZE_BYTES) {
+                          setUploadState("error");
+                          setUploadMessage(`File exceeds the ${MAX_FILE_SIZE_MB} MB limit.`);
+                          setFile(null);
+                          event.target.value = "";
+                        } else {
+                          setUploadState("idle");
+                          setUploadMessage("");
+                          setFile(picked);
+                        }
+                      }}
                     />
                   </label>
 
@@ -423,14 +482,41 @@ export default function Home() {
                         {item.question}
                       </h3>
                       <p className="mt-2 text-sm text-white/75">{item.answer}</p>
-                      {item.sources?.length ? (
+                      {item.citations?.length ? (
+                        <div className="mt-3 flex flex-col gap-2">
+                          <div className="text-[10px] uppercase tracking-[0.25em] text-white/40">
+                            Citations
+                          </div>
+                          {item.citations.map((c, i) => (
+                            <div
+                              key={i}
+                              className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-medium text-white/80 truncate">{c.documentName}</span>
+                                {c.page > 0 && (
+                                  <span className="shrink-0 rounded-full border border-white/15 px-2 py-0.5 text-[10px] text-white/40">
+                                    p.{c.page}
+                                  </span>
+                                )}
+                              </div>
+                              {c.section && (
+                                <p className="mt-0.5 text-white/50">{c.section}</p>
+                              )}
+                              <p className="mt-1 text-white/40 line-clamp-2">{c.chunkPreview}</p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : item.sources?.length ? (
                         <div className="mt-3 rounded-xl border border-white/10 bg-white/5 p-3 text-xs text-white/60">
                           <div className="mb-2 text-[10px] uppercase tracking-[0.25em] text-white/40">
                             Sources
                           </div>
-                          <pre className="whitespace-pre-wrap font-mono">
-                            {JSON.stringify(item.sources, null, 2)}
-                          </pre>
+                          <ul className="flex flex-col gap-1">
+                            {item.sources.map((s, i) => (
+                              <li key={i} className="truncate font-mono">{String((s as Record<string, unknown>).id ?? JSON.stringify(s))}</li>
+                            ))}
+                          </ul>
                         </div>
                       ) : null}
                     </article>

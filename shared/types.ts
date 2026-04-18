@@ -3,6 +3,7 @@ export interface UploadQueueMessage {
   fileUrl: string;
   fileName: string;
   uploadedAt: string;
+  tenantId?: string | null;
 }
 
 export interface ChunkRecord {
