@@ -86,6 +86,17 @@ export default function SignInPage() {
             >
               {loading ? "Signing in..." : "Sign in"}
             </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setEmail("test@ragstudio.dev");
+                setPassword("Test@1234!");
+              }}
+              className="text-xs text-white/40 transition hover:text-white/70"
+            >
+              Use test account
+            </button>
           </form>
 
           <p className="mt-6 text-center text-xs text-white/40">

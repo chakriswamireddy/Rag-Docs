@@ -25,11 +25,16 @@ import { checkUploadLimit } from "@/lib/rate-limit";
 
 type StorageProvider = "cloudflare" | "aws";
 
+// Test accounts are deliberately constrained: 1 MB cap, Cloudflare R2 only.
+const TEST_USER_MAX_BYTES = 1 * 1024 * 1024;
+const DEFAULT_MAX_BYTES = 3 * 1024 * 1024;
+
 export async function POST(req: NextRequest) {
   try {
     const session = await auth();
     const tenantId = session?.user?.tenantId ?? null;
     const userId = session?.user?.id ?? null;
+    const isTestUser = session?.user?.role === "test";
 
     // Rate limit uploads
     if (tenantId) {
@@ -56,12 +61,26 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Test users may only use Cloudflare R2; real users keep the toggle.
     const providerField = formData.get("storageProvider");
-    const storageProvider: StorageProvider =
-      providerField === "aws" ? "aws" : "cloudflare";
+    const storageProvider: StorageProvider = isTestUser
+      ? "cloudflare"
+      : providerField === "aws"
+        ? "aws"
+        : "cloudflare";
 
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
+
+    // Enforce the upload size limit server-side (1 MB for test users, 3 MB otherwise)
+    const maxBytes = isTestUser ? TEST_USER_MAX_BYTES : DEFAULT_MAX_BYTES;
+    if (buffer.byteLength > maxBytes) {
+      const maxMb = Math.round(maxBytes / (1024 * 1024));
+      return NextResponse.json(
+        { error: `File exceeds the ${maxMb} MB limit.` },
+        { status: 413 }
+      );
+    }
 
     // Content-addressed ID — re-uploading the same file is idempotent
     const docId = crypto.createHash("sha256").update(buffer).digest("hex");
