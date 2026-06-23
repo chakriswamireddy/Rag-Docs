@@ -22,8 +22,6 @@ type HistoryItem = {
 };
 
 const MAX_HISTORY_CONTEXT = 6;
-const MAX_FILE_SIZE_MB = 3;
-const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 
 function makeId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -47,6 +45,11 @@ export default function TenantAppPage({
 
   const router = useRouter();
   const { data: session, status } = useSession();
+
+  // Test accounts are limited to 1 MB and Cloudflare R2 only.
+  const isTestUser = session?.user?.role === "test";
+  const maxFileSizeMb = isTestUser ? 1 : 3;
+  const maxFileSizeBytes = maxFileSizeMb * 1024 * 1024;
 
   const [file, setFile] = useState<File | null>(null);
   const [storageProvider, setStorageProvider] = useState<"cloudflare" | "aws">("cloudflare");
@@ -96,16 +99,16 @@ export default function TenantAppPage({
       setUploadMessage("Please choose a PDF file first.");
       return;
     }
-    if (file.size > MAX_FILE_SIZE_BYTES) {
+    if (file.size > maxFileSizeBytes) {
       setUploadState("error");
-      setUploadMessage(`File exceeds the ${MAX_FILE_SIZE_MB} MB limit.`);
+      setUploadMessage(`File exceeds the ${maxFileSizeMb} MB limit.`);
       return;
     }
     setUploadState("loading");
     setUploadMessage("Uploading and indexing...");
     const formData = new FormData();
     formData.append("file", file);
-    formData.append("storageProvider", storageProvider);
+    formData.append("storageProvider", isTestUser ? "cloudflare" : storageProvider);
     try {
       const res = await fetch("/api/upload", { method: "POST", body: formData });
       const data = await res.json().catch(() => null);
@@ -253,9 +256,9 @@ export default function TenantAppPage({
                     <input type="file" accept=".pdf" className="hidden"
                       onChange={(e) => {
                         const picked = e.target.files?.[0] ?? null;
-                        if (picked && picked.size > MAX_FILE_SIZE_BYTES) {
+                        if (picked && picked.size > maxFileSizeBytes) {
                           setUploadState("error");
-                          setUploadMessage(`File exceeds the ${MAX_FILE_SIZE_MB} MB limit.`);
+                          setUploadMessage(`File exceeds the ${maxFileSizeMb} MB limit.`);
                           setFile(null);
                           e.target.value = "";
                         } else {
@@ -265,19 +268,27 @@ export default function TenantAppPage({
                         }
                       }} />
                   </label>
-                  <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 p-3">
-                    <span className="text-xs text-white/50 uppercase tracking-widest mr-1">Storage</span>
-                    {(["cloudflare", "aws"] as const).map((p) => (
-                      <button key={p} type="button" onClick={() => setStorageProvider(p)}
-                        className={`rounded-full px-4 py-1.5 text-xs font-semibold transition ${
-                          storageProvider === p
-                            ? "bg-amber-300 text-zinc-900"
-                            : "border border-white/15 text-white/60 hover:border-white/40 hover:text-white"
-                        }`}>
-                        {p === "cloudflare" ? "Cloudflare R2" : "AWS S3"}
-                      </button>
-                    ))}
-                  </div>
+                  {isTestUser ? (
+                    <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 p-3">
+                      <span className="text-xs text-white/50 uppercase tracking-widest mr-1">Storage</span>
+                      <span className="rounded-full bg-amber-300 px-4 py-1.5 text-xs font-semibold text-zinc-900">Cloudflare R2</span>
+                      <span className="text-xs text-white/40">Test account · {maxFileSizeMb} MB max</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 p-3">
+                      <span className="text-xs text-white/50 uppercase tracking-widest mr-1">Storage</span>
+                      {(["cloudflare", "aws"] as const).map((p) => (
+                        <button key={p} type="button" onClick={() => setStorageProvider(p)}
+                          className={`rounded-full px-4 py-1.5 text-xs font-semibold transition ${
+                            storageProvider === p
+                              ? "bg-amber-300 text-zinc-900"
+                              : "border border-white/15 text-white/60 hover:border-white/40 hover:text-white"
+                          }`}>
+                          {p === "cloudflare" ? "Cloudflare R2" : "AWS S3"}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <div className="flex flex-wrap items-center gap-3">
                     <button type="submit" disabled={uploadState === "loading"}
                       className="rounded-full bg-white px-5 py-2 text-sm font-semibold text-zinc-900 transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-60">

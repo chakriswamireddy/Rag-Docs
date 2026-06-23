@@ -5,32 +5,55 @@ import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
+// Credentials for the seeded test account (scripts/seed-test-user.ts).
+const TEST_EMAIL = "test@ragstudio.dev";
+const TEST_PASSWORD = "Test@1234!";
+
 export default function SignInPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [testLoading, setTestLoading] = useState(false);
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function login(withEmail: string, withPassword: string) {
     setError("");
-    setLoading(true);
 
     const result = await signIn("credentials", {
-      email,
-      password,
+      email: withEmail,
+      password: withPassword,
       redirect: false,
     });
 
-    setLoading(false);
-
     if (result?.error) {
       setError("Invalid email or password.");
-    } else {
-      router.push("/");
-      router.refresh();
+      return false;
     }
+
+    router.push("/");
+    router.refresh();
+    return true;
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    await login(email, password);
+    setLoading(false);
+  }
+
+  async function handleTestLogin() {
+    setTestLoading(true);
+    setEmail(TEST_EMAIL);
+    setPassword(TEST_PASSWORD);
+    const ok = await login(TEST_EMAIL, TEST_PASSWORD);
+    if (!ok) {
+      setError(
+        "Test account not found. Run: npx tsx scripts/seed-test-user.ts"
+      );
+    }
+    setTestLoading(false);
   }
 
   return (
@@ -81,10 +104,25 @@ export default function SignInPage() {
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || testLoading}
               className="mt-2 rounded-full bg-amber-300 py-2.5 text-sm font-semibold text-zinc-900 transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {loading ? "Signing in..." : "Sign in"}
+            </button>
+
+            <div className="my-1 flex items-center gap-3 text-[10px] uppercase tracking-widest text-white/30">
+              <span className="h-px flex-1 bg-white/10" />
+              or
+              <span className="h-px flex-1 bg-white/10" />
+            </div>
+
+            <button
+              type="button"
+              onClick={handleTestLogin}
+              disabled={loading || testLoading}
+              className="rounded-full border border-white/15 py-2.5 text-sm font-semibold text-white transition hover:border-white/40 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {testLoading ? "Signing in..." : "Sign in as Test User"}
             </button>
           </form>
 

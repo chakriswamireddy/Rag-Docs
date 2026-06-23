@@ -41,12 +41,15 @@ function buildHistoryContext(history: HistoryItem[]) {
     .join("\n\n");
 }
 
-const MAX_FILE_SIZE_MB = 3;
-const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
-
 export default function Home() {
   const { data: session, status } = useSession();
   const router = useRouter();
+
+  // Test accounts are limited to 1 MB and Cloudflare R2 only.
+  const isTestUser = session?.user?.role === "test";
+  const maxFileSizeMb = isTestUser ? 1 : 3;
+  const maxFileSizeBytes = maxFileSizeMb * 1024 * 1024;
+
   const [file, setFile] = useState<File | null>(null);
   const [storageProvider, setStorageProvider] = useState<"cloudflare" | "aws">(
     "cloudflare"
@@ -101,9 +104,9 @@ export default function Home() {
       setUploadMessage("Please choose a PDF file first.");
       return;
     }
-    if (file.size > MAX_FILE_SIZE_BYTES) {
+    if (file.size > maxFileSizeBytes) {
       setUploadState("error");
-      setUploadMessage(`File exceeds the ${MAX_FILE_SIZE_MB} MB limit.`);
+      setUploadMessage(`File exceeds the ${maxFileSizeMb} MB limit.`);
       return;
     }
 
@@ -112,7 +115,7 @@ export default function Home() {
 
     const formData = new FormData();
     formData.append("file", file);
-    formData.append("storageProvider", storageProvider);
+    formData.append("storageProvider", isTestUser ? "cloudflare" : storageProvider);
 
     try {
       const response = await fetch("/api/upload", {
@@ -310,9 +313,9 @@ export default function Home() {
                       className="hidden"
                       onChange={(event) => {
                         const picked = event.target.files?.[0] ?? null;
-                        if (picked && picked.size > MAX_FILE_SIZE_BYTES) {
+                        if (picked && picked.size > maxFileSizeBytes) {
                           setUploadState("error");
-                          setUploadMessage(`File exceeds the ${MAX_FILE_SIZE_MB} MB limit.`);
+                          setUploadMessage(`File exceeds the ${maxFileSizeMb} MB limit.`);
                           setFile(null);
                           event.target.value = "";
                         } else {
@@ -324,34 +327,48 @@ export default function Home() {
                     />
                   </label>
 
-                  {/* Storage provider toggle */}
-                  <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 p-3">
-                    <span className="text-xs text-white/50 uppercase tracking-widest mr-1">
-                      Storage
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setStorageProvider("cloudflare")}
-                      className={`rounded-full px-4 py-1.5 text-xs font-semibold transition ${
-                        storageProvider === "cloudflare"
-                          ? "bg-amber-300 text-zinc-900"
-                          : "border border-white/15 text-white/60 hover:border-white/40 hover:text-white"
-                      }`}
-                    >
-                      Cloudflare R2
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setStorageProvider("aws")}
-                      className={`rounded-full px-4 py-1.5 text-xs font-semibold transition ${
-                        storageProvider === "aws"
-                          ? "bg-cyan-300 text-zinc-900"
-                          : "border border-white/15 text-white/60 hover:border-white/40 hover:text-white"
-                      }`}
-                    >
-                      AWS S3
-                    </button>
-                  </div>
+                  {/* Storage provider — test accounts are Cloudflare R2 only */}
+                  {isTestUser ? (
+                    <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 p-3">
+                      <span className="text-xs text-white/50 uppercase tracking-widest mr-1">
+                        Storage
+                      </span>
+                      <span className="rounded-full bg-amber-300 px-4 py-1.5 text-xs font-semibold text-zinc-900">
+                        Cloudflare R2
+                      </span>
+                      <span className="text-xs text-white/40">
+                        Test account · {maxFileSizeMb} MB max
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 p-3">
+                      <span className="text-xs text-white/50 uppercase tracking-widest mr-1">
+                        Storage
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setStorageProvider("cloudflare")}
+                        className={`rounded-full px-4 py-1.5 text-xs font-semibold transition ${
+                          storageProvider === "cloudflare"
+                            ? "bg-amber-300 text-zinc-900"
+                            : "border border-white/15 text-white/60 hover:border-white/40 hover:text-white"
+                        }`}
+                      >
+                        Cloudflare R2
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setStorageProvider("aws")}
+                        className={`rounded-full px-4 py-1.5 text-xs font-semibold transition ${
+                          storageProvider === "aws"
+                            ? "bg-cyan-300 text-zinc-900"
+                            : "border border-white/15 text-white/60 hover:border-white/40 hover:text-white"
+                        }`}
+                      >
+                        AWS S3
+                      </button>
+                    </div>
+                  )}
                   <div className="flex flex-wrap items-center gap-3">
                     <button
                       type="submit"
