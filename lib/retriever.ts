@@ -9,7 +9,12 @@
  */
 import { embedQuery } from "./embeddings";
 import { index } from "./pinecone";
-import { loadBM25Index, searchBM25 } from "./bm25-store";
+import {
+  loadBM25Index,
+  searchBM25,
+  searchBM25Index,
+  type BM25Index,
+} from "./bm25-store";
 import { Document } from "langchain/document";
 
 /** Blend weight for the dense signal. 0.6 = slightly prefer semantic match. */
@@ -17,6 +22,20 @@ const ALPHA = 0.6;
 
 /** Fallback single namespace when index has no per-doc namespaces yet. */
 const DEFAULT_NAMESPACE = process.env.PINECONE_NAMESPACE ?? "default";
+
+/** Scoping for a retrieval call — restricts both dense and sparse search. */
+export type RetrievalScope = {
+  /** Tenant whose namespace to search; null/undefined for tenant-less users. */
+  tenantId?: string | null;
+  /** Pinecone document hashes to restrict to. Empty/undefined = no restriction. */
+  docIds?: string[] | null;
+  /**
+   * Request-scoped sparse index. When provided (even if empty) it is used
+   * exclusively and the on-disk global index is bypassed. When `undefined`,
+   * legacy callers fall back to the file-backed index.
+   */
+  bm25?: BM25Index | null;
+};
 
 function normalizeScores(scores: number[]): number[] {
   if (scores.length === 0) return [];
@@ -29,49 +48,83 @@ function normalizeScores(scores: number[]): number[] {
 export type ScoredDocument = { doc: Document; score: number };
 
 /**
- * Retrieve the top-k most relevant chunks using hybrid Pinecone + BM25 search.
- * @param query    The user's question (already rewritten if multi-turn).
- * @param k        Maximum results to return (default 20; callers can slice down).
- * @param tenantId Optional tenant ID to scope the search to a specific tenant namespace.
+ * Retrieve the top-k most relevant chunks using hybrid Pinecone + BM25 search,
+ * scoped to a specific tenant and/or set of documents.
+ * @param query The user's question (already rewritten if multi-turn).
+ * @param k     Maximum results to return (default 20; callers can slice down).
+ * @param scope Tenant / document / sparse-index scoping (see {@link RetrievalScope}).
  */
 export async function hybridRetrieve(
   query: string,
   k: number = 20,
-  tenantId?: string | null
+  scope: RetrievalScope = {}
 ): Promise<ScoredDocument[]> {
-  // Ensure BM25 is loaded (idempotent, synchronous read on warm paths)
-  loadBM25Index();
+  const { tenantId = null, docIds = null, bm25 } = scope;
+  const hasDocScope = !!docIds && docIds.length > 0;
+  // The query path always supplies a (possibly empty) bm25 index; its presence
+  // marks "scoped mode", where we must never fan out across every namespace.
+  const scoped = bm25 !== undefined;
 
-  // Dense retrieval via Pinecone — query across all indexed namespaces
   const queryEmbedding = await embedQuery(query);
 
-  let searchNs: string[];
+  // ── Dense retrieval via Pinecone (scoped) ──────────────────────────────────
+  type DenseMatch = { score?: number; metadata?: Record<string, unknown> };
+  let matches: DenseMatch[];
 
   if (tenantId) {
-    // Tenant-scoped: only search the tenant's namespace
-    searchNs = [`tenant_${tenantId}`];
+    // Tenant docs share one namespace — restrict by docId metadata filter.
+    const res = await index.namespace(`tenant_${tenantId}`).query({
+      vector: queryEmbedding,
+      topK: k,
+      includeMetadata: true,
+      ...(hasDocScope ? { filter: { docId: { $in: docIds } } } : {}),
+    });
+    matches = res.matches ?? [];
+  } else if (hasDocScope) {
+    // Tenant-less users: each document is its own namespace (= docId hash).
+    const perNsK = Math.max(5, Math.ceil(k / docIds.length));
+    const nsResults = await Promise.all(
+      docIds.map((ns) =>
+        index.namespace(ns).query({
+          vector: queryEmbedding,
+          topK: perNsK,
+          includeMetadata: true,
+        })
+      )
+    );
+    matches = nsResults.flatMap((r) => r.matches ?? []);
+  } else if (scoped) {
+    // Scoped query with no accessible documents — nothing to search.
+    matches = [];
   } else {
-    // Legacy: discover all namespaces
+    // Legacy fallback (unscoped callers, e.g. the agent): search all namespaces.
     const stats = await index.describeIndexStats();
     const namespaces = Object.keys(stats.namespaces ?? {});
-    searchNs = namespaces.length > 0 ? namespaces : [DEFAULT_NAMESPACE];
+    const searchNs = namespaces.length > 0 ? namespaces : [DEFAULT_NAMESPACE];
+    const perNsK = Math.max(5, Math.ceil(k / searchNs.length));
+    const nsResults = await Promise.all(
+      searchNs.map((ns) =>
+        index.namespace(ns).query({
+          vector: queryEmbedding,
+          topK: perNsK,
+          includeMetadata: true,
+        })
+      )
+    );
+    matches = nsResults.flatMap((r) => r.matches ?? []);
   }
+  const pineconeRes = { matches };
 
-  // Distribute topK evenly across namespaces; at least 5 per namespace
-  const perNsK = Math.max(5, Math.ceil(k / searchNs.length));
-  const nsResults = await Promise.all(
-    searchNs.map((ns) =>
-      index.namespace(ns).query({
-        vector: queryEmbedding,
-        topK: perNsK,
-        includeMetadata: true,
-      })
-    )
-  );
-  const pineconeRes = { matches: nsResults.flatMap((r) => r.matches ?? []) };
-
-  // Sparse retrieval: BM25Result[] — higher score means MORE relevant
-  const sparseRaw = searchBM25(query, k);
+  // ── Sparse retrieval: BM25Result[] — higher score means MORE relevant ──────
+  let sparseRaw;
+  if (bm25 !== undefined) {
+    // Scoped index provided (possibly empty) — use it exclusively.
+    sparseRaw = bm25 ? searchBM25Index(bm25, query, k) : [];
+  } else {
+    // Legacy callers (e.g. the agent) — fall back to the on-disk global index.
+    loadBM25Index();
+    sparseRaw = searchBM25(query, k);
+  }
 
   // ── Unify into a single map keyed by chunkIndex (stable across both indexes) ──
   type Entry = { doc: Document; denseScore?: number; sparseScore?: number };

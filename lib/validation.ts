@@ -17,6 +17,8 @@ export const askSchema = z.object({
     .optional()
     .default([]),
   mode: z.enum(["json", "stream", "agent"]).optional().default("json"),
+  /** Restrict retrieval to these document IDs (DB uuids). Empty = all accessible docs. */
+  documentIds: z.array(z.string().uuid()).optional(),
 });
 
 // ─── Upload endpoint ───────────────────────────────────────────────────────
