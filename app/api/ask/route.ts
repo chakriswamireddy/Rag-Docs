@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { askQuestion, streamAskQuestion } from "@/lib/rag";
+import { askQuestion, streamAskQuestion, type PipelineContext } from "@/lib/rag";
 import { runAgent } from "@/lib/agent/executor";
 import { auth } from "@/lib/auth";
 import { askSchema, validate } from "@/lib/validation";
 import { checkQueryLimit } from "@/lib/rate-limit";
+import { resolveQueryScope } from "@/lib/query-scope";
 
 export async function POST(req: NextRequest) {
   try {
@@ -30,7 +31,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: parsed.error }, { status: 400 });
     }
 
-    const { question, history: safeHistory, mode } = parsed.data;
+    const { question, history: safeHistory, mode, documentIds } = parsed.data;
 
     if (mode === "agent") {
       // Stream agent steps as NDJSON
@@ -55,8 +56,17 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // Resolve which documents this query may search (ownership-checked) and
+    // build a fresh, scoped BM25 index from their chunks.
+    const scope = await resolveQueryScope(ctx, documentIds);
+    const pipelineCtx: PipelineContext = {
+      ...ctx,
+      docIds: scope.docIds,
+      bm25: scope.bm25,
+    };
+
     if (mode === "stream") {
-      const stream = streamAskQuestion(question, safeHistory, ctx);
+      const stream = streamAskQuestion(question, safeHistory, pipelineCtx);
       return new Response(stream, {
         headers: {
           "Content-Type": "application/x-ndjson",
@@ -66,7 +76,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const result = await askQuestion(question, safeHistory, ctx);
+    const result = await askQuestion(question, safeHistory, pipelineCtx);
     return NextResponse.json(result);
   } catch (err) {
     console.error(err);

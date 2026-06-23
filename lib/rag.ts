@@ -1,5 +1,6 @@
-import { hybridRetrieve } from "./retriever";
+import { hybridRetrieve, type RetrievalScope } from "./retriever";
 import { rerank } from "./reranker";
+import type { BM25Index } from "./bm25-store";
 import { buildRetrievalPlan, type ConversationTurn } from "./router";
 import { rewriteWithContext } from "./memory";
 import { cacheKey, getCached, setCached } from "./cache";
@@ -42,10 +43,14 @@ export type AskResult = {
   }[];
 };
 
-/** Context passed through the pipeline for tenant-scoping and logging. */
+/** Context passed through the pipeline for scoping and logging. */
 export type PipelineContext = {
   tenantId?: string | null;
   userId?: string | null;
+  /** Pinecone document hashes to restrict retrieval to (resolved upstream). */
+  docIds?: string[] | null;
+  /** Request-scoped BM25 index built from the selected documents' chunks. */
+  bm25?: BM25Index | null;
 };
 
 /** Shared retrieval pipeline used by both the JSON and streaming paths. */
@@ -55,16 +60,22 @@ async function runPipeline(question: string, history: ConversationTurn[], ctx: P
 
   const t0 = performance.now();
 
+  const scope: RetrievalScope = {
+    tenantId: ctx.tenantId,
+    docIds: ctx.docIds,
+    bm25: ctx.bm25,
+  };
+
   // For multi-hop queries, use the dedicated two-hop retriever
   let primaryResults;
   if (plan.type === "multi-hop") {
-    primaryResults = await multiHopRetrieve(plan, ctx.tenantId);
+    primaryResults = await multiHopRetrieve(plan, scope);
   } else {
-    primaryResults = await hybridRetrieve(plan.primaryQuery, 20, ctx.tenantId);
+    primaryResults = await hybridRetrieve(plan.primaryQuery, 20, scope);
   }
 
   const subResults = await Promise.all(
-    plan.subQueries.map((sq) => hybridRetrieve(sq, 10, ctx.tenantId))
+    plan.subQueries.map((sq) => hybridRetrieve(sq, 10, scope))
   );
 
   const merged = [...primaryResults];
@@ -137,8 +148,10 @@ export async function askQuestion(
   const totalStart = performance.now();
   const queryId = makeQueryId();
 
-  // Only cache for single-turn (no history) queries to keep things simple
-  const key = history.length === 0 ? cacheKey(question) : null;
+  // Only cache for single-turn (no history) queries to keep things simple.
+  // Scope the key by document set so different users/selections never collide.
+  const scopeSig = (ctx.docIds ?? []).slice().sort().join(",");
+  const key = history.length === 0 ? cacheKey(question, scopeSig) : null;
   if (key) {
     const hit = getCached(key);
     if (hit) return hit;

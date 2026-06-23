@@ -1,9 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+
+type DocItem = {
+  id: string;
+  fileName: string | null;
+  status: string | null;
+  totalChunks: number | null;
+};
 
 type Citation = {
   documentName: string;
@@ -66,12 +73,34 @@ export default function Home() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [includeHistory, setIncludeHistory] = useState(true);
   const [streamingAnswer, setStreamingAnswer] = useState("");
+  const [documents, setDocuments] = useState<DocItem[]>([]);
+  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
+
+  const fetchDocuments = useCallback(async () => {
+    try {
+      const res = await fetch("/api/my-documents");
+      if (!res.ok) return;
+      const data = (await res.json()) as { documents?: DocItem[] };
+      if (Array.isArray(data.documents)) setDocuments(data.documents);
+    } catch {
+      // Best-effort — leave the list as-is on failure.
+    }
+  }, []);
+
+  function toggleDoc(id: string) {
+    setSelectedDocIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  }
 
   useEffect(() => {
     if (status === "unauthenticated") {
       router.replace("/auth/signin");
     }
-  }, [status, router]);
+    if (status === "authenticated") {
+      fetchDocuments();
+    }
+  }, [status, router, fetchDocuments]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -129,7 +158,10 @@ export default function Home() {
       }
 
       setUploadState("success");
-      setUploadMessage("Indexed. You can ask questions now.");
+      setUploadMessage(
+        "Uploaded. Indexing runs in the background — hit Refresh in the scope list and pick it once it shows \"indexed\"."
+      );
+      fetchDocuments();
     } catch (error) {
       setUploadState("error");
       setUploadMessage(
@@ -163,6 +195,7 @@ export default function Home() {
           question: trimmed,
           history: historyPayload,
           mode: "stream",
+          documentIds: selectedDocIds,
         }),
       });
 
@@ -407,6 +440,64 @@ export default function Home() {
                     />
                     Include recent history
                   </label>
+                </div>
+
+                {/* Document scope picker */}
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-xs uppercase tracking-widest text-white/50">
+                      Scope
+                      {selectedDocIds.length === 0
+                        ? " · all documents"
+                        : ` · ${selectedDocIds.length} selected`}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={fetchDocuments}
+                      className="text-[10px] uppercase tracking-widest text-white/40 transition hover:text-white/70"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                  {documents.length === 0 ? (
+                    <p className="text-xs text-white/40">
+                      No documents yet. Upload one above.
+                    </p>
+                  ) : (
+                    <div className="flex max-h-40 flex-col gap-1 overflow-y-auto">
+                      {documents.map((d) => {
+                        const indexed = d.status === "indexed";
+                        const checked = selectedDocIds.includes(d.id);
+                        return (
+                          <label
+                            key={d.id}
+                            className={`flex items-center gap-2 rounded-lg px-2 py-1 text-xs ${
+                              indexed
+                                ? "cursor-pointer text-white/80 hover:bg-white/5"
+                                : "cursor-not-allowed text-white/30"
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              disabled={!indexed}
+                              checked={checked}
+                              onChange={() => toggleDoc(d.id)}
+                              className="h-3.5 w-3.5 rounded border-white/30 bg-white/10 text-amber-300"
+                            />
+                            <span className="flex-1 truncate">
+                              {d.fileName ?? "Untitled"}
+                            </span>
+                            <span className="shrink-0 rounded-full border border-white/10 px-2 py-0.5 text-[10px] text-white/40">
+                              {indexed ? `${d.totalChunks ?? 0} chunks` : d.status}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <p className="mt-2 text-[10px] text-white/30">
+                    Leave all unchecked to search every indexed document.
+                  </p>
                 </div>
 
                 <form className="flex flex-col gap-4" onSubmit={handleAsk}>

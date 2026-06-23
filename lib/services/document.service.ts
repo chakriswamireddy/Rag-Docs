@@ -1,6 +1,6 @@
 import { getDb } from "@/lib/db";
 import { documents, documentChunks } from "@/lib/db/schema";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, inArray } from "drizzle-orm";
 
 export async function createDocument(params: {
   tenantId: string | null;
@@ -66,6 +66,49 @@ export async function listDocuments(tenantId: string, limit = 50, offset = 0) {
     .orderBy(desc(documents.createdAt))
     .limit(limit)
     .offset(offset);
+}
+
+/**
+ * List the documents a principal can access:
+ *  - tenant users: scoped to their tenant
+ *  - tenant-less users (e.g. the test account): scoped to their own uploads
+ */
+export async function listAccessibleDocuments(
+  scope: { tenantId: string | null; userId: string | null },
+  limit = 200,
+  offset = 0
+) {
+  const db = getDb();
+  const cond = scope.tenantId
+    ? eq(documents.tenantId, scope.tenantId)
+    : scope.userId
+      ? eq(documents.userId, scope.userId)
+      : null;
+  if (!cond) return [];
+  return db
+    .select()
+    .from(documents)
+    .where(cond)
+    .orderBy(desc(documents.createdAt))
+    .limit(limit)
+    .offset(offset);
+}
+
+/** Fetch chunk rows for a set of document IDs (used to build a scoped BM25 corpus). */
+export async function getChunksForDocumentIds(documentIds: string[], limit = 6000) {
+  if (documentIds.length === 0) return [];
+  const db = getDb();
+  return db
+    .select({
+      documentId: documentChunks.documentId,
+      chunkIndex: documentChunks.chunkIndex,
+      content: documentChunks.content,
+      sectionTitle: documentChunks.sectionTitle,
+      pageNumber: documentChunks.pageNumber,
+    })
+    .from(documentChunks)
+    .where(inArray(documentChunks.documentId, documentIds))
+    .limit(limit);
 }
 
 export async function getDocumentWithChunks(docId: string) {

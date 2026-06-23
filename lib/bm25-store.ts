@@ -3,7 +3,15 @@
  * Stores term-frequency data for every chunk so keyword/exact-match queries
  * (IDs, names, numbers) find results that pure vector search may miss.
  *
- * Files written to disk:
+ * Two modes:
+ *   - In-memory, request-scoped index built from a known set of chunks
+ *     (`createBM25Index` / `searchBM25Index`). Preferred for the query path:
+ *     always fresh and scoped to the documents the user is asking about.
+ *   - Legacy file-backed global index (`buildBM25Index` / `loadBM25Index` /
+ *     `searchBM25`), persisted to disk. Kept for offline tooling and callers
+ *     (e.g. the agent) that have no scoped corpus.
+ *
+ * Files written to disk (legacy mode):
  *   data/bm25_index.json   – per-doc term-frequencies, DF table, stats
  *   data/bm25_corpus.json  – full document content + metadata
  */
@@ -34,11 +42,19 @@ type SerializedIndex = {
   docCount: number;
 };
 
-let cachedIndex: SerializedIndex | null = null;
-let cachedCorpus: Document[] | null = null;
+/** A self-contained BM25 index that carries its own corpus (no disk access). */
+export type BM25Index = SerializedIndex & { corpus: Document[] };
 
-/** Build the BM25 index from the given documents and persist it to disk. */
-export function buildBM25Index(docs: Document[]): void {
+export type BM25Result = {
+  doc: Document;
+  score: number;
+  corpusIndex: number;
+};
+
+// ── In-memory, request-scoped index ────────────────────────────────────────
+
+/** Build an in-memory BM25 index from the given documents. No disk I/O. */
+export function createBM25Index(docs: Document[]): BM25Index {
   const records: DocRecord[] = [];
   const df: Record<string, number> = {};
   let totalLength = 0;
@@ -56,22 +72,65 @@ export function buildBM25Index(docs: Document[]): void {
     records.push({ id: i, termFreqs, length: tokens.length });
   }
 
-  cachedIndex = {
+  return {
     docs: records,
     df,
     avgLength: records.length > 0 ? totalLength / records.length : 0,
     docCount: records.length,
+    corpus: docs,
   };
-  cachedCorpus = docs;
+}
+
+/** Score the corpus of a given index against the query; return top-k. */
+export function searchBM25Index(
+  idx: BM25Index,
+  query: string,
+  k: number
+): BM25Result[] {
+  const queryTokens = tokenize(query);
+  if (queryTokens.length === 0 || idx.docCount === 0) return [];
+
+  const { docs, df, avgLength, docCount, corpus } = idx;
+  const results: Array<{ corpusIndex: number; score: number }> = [];
+
+  for (const record of docs) {
+    let score = 0;
+    for (const token of queryTokens) {
+      const tf = record.termFreqs[token] ?? 0;
+      if (tf === 0) continue;
+      const docFreq = df[token] ?? 0;
+      const idf = Math.log((docCount - docFreq + 0.5) / (docFreq + 0.5) + 1);
+      const denom = tf + K1 * (1 - B + B * (record.length / (avgLength || 1)));
+      score += idf * ((tf * (K1 + 1)) / denom);
+    }
+    if (score > 0) results.push({ corpusIndex: record.id, score });
+  }
+
+  results.sort((a, b) => b.score - a.score);
+  return results.slice(0, k).map(({ corpusIndex, score }) => ({
+    doc: corpus[corpusIndex],
+    score,
+    corpusIndex,
+  }));
+}
+
+// ── Legacy file-backed global index ────────────────────────────────────────
+
+let cachedIndex: BM25Index | null = null;
+
+/** Build the BM25 index from the given documents and persist it to disk. */
+export function buildBM25Index(docs: Document[]): void {
+  cachedIndex = createBM25Index(docs);
 
   const dataDir = path.join(process.cwd(), "data");
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-  fs.writeFileSync(BM25_INDEX_PATH, JSON.stringify(cachedIndex));
+  const { corpus, ...serializable } = cachedIndex;
+  fs.writeFileSync(BM25_INDEX_PATH, JSON.stringify(serializable));
   fs.writeFileSync(
     BM25_CORPUS_PATH,
     JSON.stringify(
-      docs.map((d) => ({ pageContent: d.pageContent, metadata: d.metadata }))
+      corpus.map((d) => ({ pageContent: d.pageContent, metadata: d.metadata }))
     )
   );
 }
@@ -81,61 +140,30 @@ export function buildBM25Index(docs: Document[]): void {
  * Called once per process before the first search.
  */
 export function loadBM25Index(): void {
-  if (cachedIndex && cachedCorpus) return;
+  if (cachedIndex) return;
   try {
     if (fs.existsSync(BM25_INDEX_PATH) && fs.existsSync(BM25_CORPUS_PATH)) {
-      cachedIndex = JSON.parse(
+      const serialized = JSON.parse(
         fs.readFileSync(BM25_INDEX_PATH, "utf-8")
       ) as SerializedIndex;
       const raw = JSON.parse(fs.readFileSync(BM25_CORPUS_PATH, "utf-8")) as Array<{
         pageContent: string;
         metadata: Record<string, unknown>;
       }>;
-      cachedCorpus = raw.map(
-        (d) => new Document({ pageContent: d.pageContent, metadata: d.metadata })
-      );
+      cachedIndex = {
+        ...serialized,
+        corpus: raw.map(
+          (d) => new Document({ pageContent: d.pageContent, metadata: d.metadata })
+        ),
+      };
     }
   } catch {
     // Index not yet built — first run before any upload. Fine to ignore.
   }
 }
 
-export type BM25Result = {
-  doc: Document;
-  score: number;
-  corpusIndex: number;
-};
-
-/** Score all documents against the query and return the top-k by BM25 score. */
+/** Score all documents in the global file-backed index; return top-k. */
 export function searchBM25(query: string, k: number): BM25Result[] {
-  if (!cachedIndex || !cachedCorpus) return [];
-
-  const queryTokens = tokenize(query);
-  if (queryTokens.length === 0) return [];
-
-  const { docs, df, avgLength, docCount } = cachedIndex;
-  const results: Array<{ corpusIndex: number; score: number }> = [];
-
-  for (const record of docs) {
-    let score = 0;
-    for (const token of queryTokens) {
-      const tf = record.termFreqs[token] ?? 0;
-      if (tf === 0) continue;
-      const docFreq = df[token] ?? 0;
-      const idf = Math.log(
-        (docCount - docFreq + 0.5) / (docFreq + 0.5) + 1
-      );
-      const denom =
-        tf + K1 * (1 - B + B * (record.length / (avgLength || 1)));
-      score += idf * ((tf * (K1 + 1)) / denom);
-    }
-    if (score > 0) results.push({ corpusIndex: record.id, score });
-  }
-
-  results.sort((a, b) => b.score - a.score);
-  return results.slice(0, k).map(({ corpusIndex, score }) => ({
-    doc: cachedCorpus![corpusIndex],
-    score,
-    corpusIndex,
-  }));
+  if (!cachedIndex) return [];
+  return searchBM25Index(cachedIndex, query, k);
 }

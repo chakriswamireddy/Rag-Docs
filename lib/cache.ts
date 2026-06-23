@@ -22,13 +22,15 @@ type CacheEntry = {
 const store = new Map<string, CacheEntry>();
 
 /**
- * Build a stable cache key from the (canonicalized) question text.
+ * Build a stable cache key from the (canonicalized) question text plus a scope
+ * signature (e.g. the set of document IDs being searched), so answers are not
+ * shared across users querying different documents.
  * The key is an 8-byte hex digest — collision risk is negligible at 100 entries.
  */
-export function cacheKey(question: string): string {
+export function cacheKey(question: string, scope = ""): string {
   return crypto
     .createHash("sha256")
-    .update(question.trim().toLowerCase())
+    .update(`${question.trim().toLowerCase()}|${scope}`)
     .digest("hex")
     .slice(0, 16);
 }

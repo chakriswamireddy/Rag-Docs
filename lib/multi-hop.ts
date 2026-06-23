@@ -13,7 +13,7 @@
  * For all other types the standard single-hop pipeline is used.
  */
 import Groq from "groq-sdk";
-import { hybridRetrieve, type ScoredDocument } from "./retriever";
+import { hybridRetrieve, type ScoredDocument, type RetrievalScope } from "./retriever";
 import type { RetrievalPlan } from "./router";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY! });
@@ -75,10 +75,10 @@ function chunkKey(doc: ScoredDocument): string {
  */
 export async function multiHopRetrieve(
   plan: RetrievalPlan,
-  tenantId?: string | null
+  scope: RetrievalScope = {}
 ): Promise<ScoredDocument[]> {
   // Hop 1
-  const hop1 = await hybridRetrieve(plan.primaryQuery, 10, tenantId);
+  const hop1 = await hybridRetrieve(plan.primaryQuery, 10, scope);
 
   const firstHopContext = hop1
     .slice(0, 3)
@@ -95,7 +95,7 @@ export async function multiHopRetrieve(
 
   // Hop 2: retrieve for all follow-up queries in parallel
   const hop2Results = await Promise.all(
-    followups.map((q) => hybridRetrieve(q, 6, tenantId))
+    followups.map((q) => hybridRetrieve(q, 6, scope))
   );
 
   // Merge: primary hop takes priority
