@@ -4,6 +4,7 @@ const nextConfig: NextConfig = {
   serverExternalPackages: [
     "@xenova/transformers",
     "pdf-parse",
+    "unpdf",
   ],
   async headers() {
     return [
