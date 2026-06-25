@@ -1,15 +1,11 @@
 /**
  * POST /api/upload
  *
- * 1. Accepts a multipart PDF upload.
+ * 1. Accepts a multipart PDF upload (size-capped per role).
  * 2. Generates a SHA-256 content-addressed docId.
  * 3. Stores the raw file in Cloudflare R2 or AWS S3 based on `storageProvider`.
- * 4. Dispatches metadata to the Cloudflare Worker for routing.
- * 5. Returns immediately — all processing is async.
- *
- * Required env vars:
- *   CF_WORKER_URL    – URL of the upload-router Cloudflare Worker
- *   CF_WORKER_SECRET – Shared secret validated by the Worker
+ * 4. Indexes the PDF synchronously (parse → embed → Pinecone + Postgres) and
+ *    returns once the document is queryable. See lib/pdf-indexer.ts.
  *
  * Optional form field:
  *   storageProvider  – "cloudflare" (default) | "aws"
@@ -20,7 +16,7 @@ import { getR2FileUrl, uploadToR2 } from "@/lib/r2";
 import { getS3FileUrl, uploadToS3 } from "@/lib/s3";
 import { auth } from "@/lib/auth";
 import { createDocument } from "@/lib/services/document.service";
-import { createJob } from "@/lib/services/processing.service";
+import { indexPdfBuffer } from "@/lib/pdf-indexer";
 import { checkUploadLimit } from "@/lib/rate-limit";
 
 type StorageProvider = "cloudflare" | "aws";
@@ -106,48 +102,33 @@ export async function POST(req: NextRequest) {
       mimeType: "application/pdf",
     });
 
-    // Create processing jobs for each stage
-    const stages = ["parsing", "chunking", "embedding", "indexing"];
-    for (const stage of stages) {
-      await createJob(tenantId, doc.id, stage);
-    }
-
-    // 3. Dispatch event to CF Worker (Worker decides small-inline vs SQS queue)
-    if (!process.env.CF_WORKER_URL) {
-      return NextResponse.json(
-        { error: "CF_WORKER_URL is not configured" },
-        { status: 500 }
-      );
-    }
-
-    const workerRes = await fetch(process.env.CF_WORKER_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Worker-Secret": process.env.CF_WORKER_SECRET ?? "",
-      },
-      body: JSON.stringify({
-        docId,
-        fileUrl,
-        fileName: file.name,
-        fileSize: buffer.byteLength,
-        uploadedAt: new Date().toISOString(),
-        storageProvider,
-        tenantId,
-        userId,
-      }),
+    // 3. Index synchronously — parse, embed and upsert right here. The file is
+    //    already in memory and capped at a few MB, so there is no need for the
+    //    external Worker + webhook round-trip (which left documents stuck at
+    //    "uploaded" when the Worker wasn't reachable).
+    const uploadedAt = new Date().toISOString();
+    const result = await indexPdfBuffer({
+      buffer,
+      docId,
+      documentId: doc.id,
+      fileName: file.name ?? "document.pdf",
+      tenantId,
+      uploadedAt,
     });
 
-    if (!workerRes.ok) {
-      const detail = await workerRes.text();
-      console.error("[upload] Worker dispatch error:", detail);
+    if (!result.ok) {
       return NextResponse.json(
-        { error: "Processing dispatch failed", detail },
-        { status: 502 }
+        { error: "Indexing failed", detail: result.error },
+        { status: 422 }
       );
     }
 
-    return NextResponse.json({ success: true, docId, storageProvider });
+    return NextResponse.json({
+      success: true,
+      docId,
+      storageProvider,
+      totalChunks: result.totalChunks,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[upload] error:", message);

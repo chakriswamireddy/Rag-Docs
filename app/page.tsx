@@ -159,7 +159,9 @@ export default function Home() {
 
       setUploadState("success");
       setUploadMessage(
-        "Uploaded. Indexing runs in the background — hit Refresh in the scope list and pick it once it shows \"indexed\"."
+        typeof data?.totalChunks === "number"
+          ? `Indexed ${data.totalChunks} chunks. Select it in the scope list below and ask away.`
+          : "Indexed. Select it in the scope list below and ask away."
       );
       fetchDocuments();
     } catch (error) {
