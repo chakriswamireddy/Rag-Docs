@@ -14,6 +14,7 @@
 import { extractText } from "unpdf";
 import { embedTexts } from "@/shared/embeddings";
 import { index } from "@/lib/pinecone";
+import { ensurePineconeIndex, resetEnsuredIndex } from "@/shared/pinecone";
 import { storeChunks, updateDocumentStatus } from "@/lib/services/document.service";
 
 const MAX_CHUNK_SIZE = 800;
@@ -125,6 +126,11 @@ export async function indexPdfBuffer(params: {
       return { ok: false, error };
     }
 
+    // Make sure the Pinecone index exists at the correct embedding dimension
+    // before we upsert. This self-heals a wrong-dimension index (e.g. a stale
+    // 1024-dim index vs. our 384-dim embeddings) with no manual admin step.
+    await ensurePineconeIndex();
+
     const embeddings = await embedTexts(chunks.map((c) => c.text));
 
     const namespace = tenantId ? `tenant_${tenantId}` : docId;
@@ -142,8 +148,22 @@ export async function indexPdfBuffer(params: {
         ...(tenantId ? { tenantId } : {}),
       },
     }));
-    for (let i = 0; i < records.length; i += UPSERT_BATCH) {
-      await ns.upsert({ records: records.slice(i, i + UPSERT_BATCH) });
+    try {
+      for (let i = 0; i < records.length; i += UPSERT_BATCH) {
+        await ns.upsert({ records: records.slice(i, i + UPSERT_BATCH) });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // If the index dimension is still wrong, force a re-provision on the next
+      // attempt and surface a clear, actionable message instead of the raw error.
+      if (/dimension/i.test(msg)) {
+        resetEnsuredIndex();
+        const friendly =
+          "The vector index was misconfigured and is being repaired. Please try uploading again in about 30 seconds.";
+        await updateDocumentStatus(docId, "failed", { errorMessage: friendly });
+        return { ok: false, error: friendly };
+      }
+      throw err;
     }
 
     await storeChunks(
