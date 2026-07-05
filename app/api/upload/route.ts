@@ -19,6 +19,8 @@ import { createDocument } from "@/lib/services/document.service";
 import { indexPdfBuffer } from "@/lib/pdf-indexer";
 import { checkUploadLimit } from "@/lib/rate-limit";
 
+export const maxDuration = 60; // seconds — first upload may provision the Pinecone index
+
 type StorageProvider = "cloudflare" | "aws";
 
 // Test accounts are deliberately constrained: 1 MB cap, Cloudflare R2 only.

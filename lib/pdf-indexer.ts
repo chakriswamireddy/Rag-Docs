@@ -14,6 +14,7 @@
 import { extractText } from "unpdf";
 import { embedTexts } from "@/shared/embeddings";
 import { index } from "@/lib/pinecone";
+import { ensurePineconeIndex, resetPineconeIndexCache } from "@/shared/pinecone";
 import { storeChunks, updateDocumentStatus } from "@/lib/services/document.service";
 
 const MAX_CHUNK_SIZE = 800;
@@ -117,6 +118,8 @@ export async function indexPdfBuffer(params: {
   const { buffer, docId, documentId, fileName, tenantId, uploadedAt } = params;
 
   try {
+    await ensurePineconeIndex();
+
     const chunks = await extractChunks(buffer);
     if (chunks.length === 0) {
       const error =
@@ -142,8 +145,19 @@ export async function indexPdfBuffer(params: {
         ...(tenantId ? { tenantId } : {}),
       },
     }));
-    for (let i = 0; i < records.length; i += UPSERT_BATCH) {
-      await ns.upsert({ records: records.slice(i, i + UPSERT_BATCH) });
+    try {
+      for (let i = 0; i < records.length; i += UPSERT_BATCH) {
+        await ns.upsert({ records: records.slice(i, i + UPSERT_BATCH) });
+      }
+    } catch (upsertErr) {
+      const msg = upsertErr instanceof Error ? upsertErr.message : String(upsertErr);
+      if (msg.includes("dimension")) {
+        resetPineconeIndexCache();
+        const error = "Vector index was repaired — please retry the upload in ~30s.";
+        await updateDocumentStatus(docId, "failed", { errorMessage: error });
+        return { ok: false, error };
+      }
+      throw upsertErr;
     }
 
     await storeChunks(
