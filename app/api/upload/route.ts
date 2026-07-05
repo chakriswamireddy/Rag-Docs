@@ -21,6 +21,10 @@ import { checkUploadLimit } from "@/lib/rate-limit";
 
 type StorageProvider = "cloudflare" | "aws";
 
+// Give the function headroom: the first upload after a deploy may need to
+// (re)provision the Pinecone index before indexing the PDF.
+export const maxDuration = 60;
+
 // Test accounts are deliberately constrained: 1 MB cap, Cloudflare R2 only.
 const TEST_USER_MAX_BYTES = 1 * 1024 * 1024;
 const DEFAULT_MAX_BYTES = 3 * 1024 * 1024;
